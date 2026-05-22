@@ -9,7 +9,6 @@ from openai import OpenAI
 
 from moviepy import VideoFileClip, ImageClip, CompositeVideoClip
 
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
@@ -23,13 +22,18 @@ OUTPUT_VIDEO = "output.mp4"
 LOGO_IMAGE = "meatball.png"
 FRAME_IMAGE = "frame.jpg"
 
-PRIVACY_STATUS = "private"
+PRIVACY_STATUS = "public"
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+YOUTUBE_TOKEN_FILE = os.getenv(
+    "YOUTUBE_TOKEN_FILE",
+    "/var/data/youtube_token.pickle"
+)
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 
 # -------------------------
@@ -69,7 +73,10 @@ def extract_frame():
 
     timestamp = min(3, video.duration / 2)
 
-    video.save_frame(FRAME_IMAGE, t=timestamp)
+    video.save_frame(
+        FRAME_IMAGE,
+        t=timestamp
+    )
 
     video.close()
 
@@ -138,7 +145,6 @@ Rules:
         metadata = json.loads(raw)
     except Exception:
         print("\nBad JSON. Using fallback metadata.")
-
         metadata = {
             "title": "Meatball The Frenchie Being Adorable",
             "description": "Watch Meatball being adorable. #Frenchie #FrenchBulldog #Dogs #DogShorts"
@@ -152,27 +158,29 @@ Rules:
 # -------------------------
 
 def get_youtube_service():
-    credentials = None
+    if not os.path.exists(YOUTUBE_TOKEN_FILE):
+        raise FileNotFoundError(
+            f"YouTube token not found at {YOUTUBE_TOKEN_FILE}. "
+            "Connect YouTube from the web app first."
+        )
 
-    if os.path.exists("youtube_token.pickle"):
-        with open("youtube_token.pickle", "rb") as token:
-            credentials = pickle.load(token)
+    with open(YOUTUBE_TOKEN_FILE, "rb") as token:
+        credentials = pickle.load(token)
 
-    if not credentials or not credentials.valid:
-        if credentials and credentials.expired and credentials.refresh_token:
-            credentials.refresh(Request())
-        else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                "client_secrets.json",
-                SCOPES
-            )
+    if credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
 
-            credentials = flow.run_local_server(port=0)
-
-        with open("youtube_token.pickle", "wb") as token:
+        with open(YOUTUBE_TOKEN_FILE, "wb") as token:
             pickle.dump(credentials, token)
 
-    return build("youtube", "v3", credentials=credentials)
+    if not credentials or not credentials.valid:
+        raise Exception("YouTube credentials are not valid. Reconnect YouTube.")
+
+    return build(
+        "youtube",
+        "v3",
+        credentials=credentials
+    )
 
 
 # -------------------------
@@ -241,7 +249,7 @@ def process_and_upload(input_video_path):
 
 
 # -------------------------
-# LOCAL TESTING
+# LOCAL TESTING ONLY
 # -------------------------
 
 if __name__ == "__main__":
