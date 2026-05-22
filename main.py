@@ -13,12 +13,28 @@ from meatball_uploader import process_and_upload
 app = FastAPI()
 
 UPLOAD_PASSWORD = os.getenv("UPLOAD_PASSWORD", "meatball")
-
 BASE_URL = os.getenv("BASE_URL", "https://meatball-uploader.onrender.com")
-CLIENT_SECRETS_FILE = os.getenv("CLIENT_SECRETS_FILE", "client_secrets.json")
+
+CLIENT_SECRETS_FILE = "/var/data/client_secrets.json"
 YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", "/var/data/youtube_token.pickle")
+OAUTH_STATE_FILE = "/var/data/oauth_state.txt"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+def ensure_google_client_secret_file():
+    if os.path.exists(CLIENT_SECRETS_FILE):
+        return
+
+    secret_json = os.getenv("GOOGLE_CLIENT_SECRET_JSON")
+
+    if not secret_json:
+        raise RuntimeError("Missing GOOGLE_CLIENT_SECRET_JSON environment variable.")
+
+    os.makedirs("/var/data", exist_ok=True)
+
+    with open(CLIENT_SECRETS_FILE, "w") as f:
+        f.write(secret_json)
 
 
 @app.get("/health")
@@ -30,11 +46,7 @@ def health():
 def home():
     youtube_connected = Path(YOUTUBE_TOKEN_FILE).exists()
 
-    youtube_status = (
-        "? YouTube connected"
-        if youtube_connected
-        else "? YouTube not connected"
-    )
+    youtube_status = "? YouTube connected" if youtube_connected else "? YouTube not connected"
 
     return f"""
     <html>
@@ -43,11 +55,7 @@ def home():
 
             <p><strong>Status:</strong> {youtube_status}</p>
 
-            <p>
-                <a href="/auth/youtube">
-                    Connect YouTube Account
-                </a>
-            </p>
+            <p><a href="/auth/youtube">Connect YouTube Account</a></p>
 
             <hr>
 
@@ -70,41 +78,43 @@ def home():
 
 @app.get("/auth/youtube")
 def auth_youtube():
+    ensure_google_client_secret_file()
+
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
-        redirect_uri=f"{BASE_URL}/oauth2callback"
+        redirect_uri=f"{BASE_URL}/oauth2callback",
     )
 
     authorization_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
-        prompt="consent"
+        prompt="consent",
     )
 
     os.makedirs("/var/data", exist_ok=True)
 
-    with open("/var/data/oauth_state.txt", "w") as f:
+    with open(OAUTH_STATE_FILE, "w") as f:
         f.write(state)
 
     return RedirectResponse(authorization_url)
 
 
-@app.get("/oauth2callback")
+@app.get("/oauth2callback", response_class=HTMLResponse)
 def oauth2callback(request: Request):
-    state_file = "/var/data/oauth_state.txt"
+    ensure_google_client_secret_file()
 
-    if not os.path.exists(state_file):
+    if not os.path.exists(OAUTH_STATE_FILE):
         return HTMLResponse("Missing OAuth state. Please try connecting YouTube again.")
 
-    with open(state_file, "r") as f:
+    with open(OAUTH_STATE_FILE, "r") as f:
         state = f.read()
 
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRETS_FILE,
         scopes=SCOPES,
         state=state,
-        redirect_uri=f"{BASE_URL}/oauth2callback"
+        redirect_uri=f"{BASE_URL}/oauth2callback",
     )
 
     flow.fetch_token(authorization_response=str(request.url))
@@ -114,10 +124,11 @@ def oauth2callback(request: Request):
     os.makedirs(os.path.dirname(YOUTUBE_TOKEN_FILE), exist_ok=True)
 
     import pickle
+
     with open(YOUTUBE_TOKEN_FILE, "wb") as token:
         pickle.dump(credentials, token)
 
-    return HTMLResponse("""
+    return """
     <html>
         <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
             <h2>YouTube connected ?</h2>
@@ -125,22 +136,22 @@ def oauth2callback(request: Request):
             <p><a href="/">Back to uploader</a></p>
         </body>
     </html>
-    """)
+    """
 
 
 @app.post("/upload", response_class=HTMLResponse)
 def upload_video(
     password: str = Form(...),
-    video: UploadFile = File(...)
+    video: UploadFile = File(...),
 ):
     if password != UPLOAD_PASSWORD:
-        return HTMLResponse("<h3>Invalid password</h3>")
+        return "<h3>Invalid password</h3>"
 
     if not Path(YOUTUBE_TOKEN_FILE).exists():
-        return HTMLResponse("""
+        return """
         <h3>YouTube is not connected yet.</h3>
         <p><a href="/auth/youtube">Connect YouTube Account</a></p>
-        """)
+        """
 
     os.makedirs("uploads", exist_ok=True)
 
@@ -152,7 +163,7 @@ def upload_video(
 
     youtube_url = process_and_upload(input_path)
 
-    return HTMLResponse(f"""
+    return f"""
     <html>
         <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
             <h2>Upload complete ?</h2>
@@ -161,4 +172,4 @@ def upload_video(
             <p><a href="/">Upload another video</a></p>
         </body>
     </html>
-    """)
+    """
