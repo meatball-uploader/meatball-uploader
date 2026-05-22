@@ -1,0 +1,7 @@
+venv/
+.env
+youtube_token.pickle
+client_secrets.json
+output.mp4
+input.mp4
+frame.jpg
