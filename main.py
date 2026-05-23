@@ -230,7 +230,7 @@ transition:all .5s;
 
 <h1>
 
-Processing…
+Processing...
 
 </h1>
 
