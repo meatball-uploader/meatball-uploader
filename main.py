@@ -1,13 +1,10 @@
 import os
 import shutil
-import secrets
-import pickle
-from pathlib import Path
+import uuid
+import threading
 
-from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
-
-from google_auth_oauthlib.flow import Flow
+from fastapi import FastAPI, UploadFile, File, Form
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from meatball_uploader import process_and_upload
 
@@ -19,111 +16,97 @@ UPLOAD_PASSWORD = os.getenv(
     "meatball"
 )
 
-BASE_URL = os.getenv(
-    "BASE_URL",
-    "https://meatball-uploader.onrender.com"
-)
-
-CLIENT_SECRETS_FILE = "/var/data/client_secrets.json"
-
-YOUTUBE_TOKEN_FILE = os.getenv(
-    "YOUTUBE_TOKEN_FILE",
-    "/var/data/youtube_token.pickle"
-)
-
-STATE_FILE = "/var/data/oauth_state.txt"
-
-CODE_VERIFIER_FILE = "/var/data/oauth_verifier.txt"
-
-SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload"
-]
+jobs = {}
 
 
-def ensure_google_secret():
+def run_job(job_id, input_path):
 
-    if os.path.exists(
-        CLIENT_SECRETS_FILE
-    ):
-        return
+    try:
 
-    secret = os.getenv(
-        "GOOGLE_CLIENT_SECRET_JSON"
-    )
+        jobs[job_id] = {
+            "progress": 10,
+            "status": "Starting...",
+            "done": False
+        }
 
-    if not secret:
-        raise Exception(
-            "Missing GOOGLE_CLIENT_SECRET_JSON"
+        jobs[job_id]["progress"] = 25
+        jobs[job_id]["status"] = "Processing video..."
+
+        youtube_url = process_and_upload(
+            input_path
         )
 
-    os.makedirs(
-        "/var/data",
-        exist_ok=True
-    )
+        jobs[job_id]["progress"] = 100
 
-    with open(
-        CLIENT_SECRETS_FILE,
-        "w"
-    ) as f:
+        jobs[job_id]["status"] = "Complete"
 
-        f.write(secret)
+        jobs[job_id]["done"] = True
+
+        jobs[job_id]["youtube_url"] = youtube_url
+
+    except Exception as e:
+
+        jobs[job_id] = {
+
+            "progress": 100,
+
+            "status": "Failed",
+
+            "done": True,
+
+            "error": str(e)
+        }
 
 
-@app.get("/health")
-def health():
-
-    return {
-        "status": "ok"
-    }
-
-
-@app.get(
-    "/",
-    response_class=HTMLResponse
-)
+@app.get("/", response_class=HTMLResponse)
 def home():
 
-    connected = os.path.exists(
-        YOUTUBE_TOKEN_FILE
-    )
-
-    status = (
-        "? Connected"
-        if connected
-        else
-        "? Not Connected"
-    )
-
-    return f"""
+    return """
 <html>
 
-<body
-style="
+<head>
+
+<style>
+
+body{
 font-family:Arial;
+background:#111827;
+color:white;
 max-width:700px;
 margin:40px auto;
-">
+}
+
+.card{
+background:#1f2937;
+padding:30px;
+border-radius:16px;
+}
+
+button{
+padding:12px 18px;
+background:#2563eb;
+color:white;
+border:none;
+border-radius:8px;
+}
+
+input{
+width:100%;
+padding:10px;
+margin-top:8px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<div class="card">
 
 <h1>
 ?? Meatball Uploader
 </h1>
-
-<p>
-YouTube:
-{status}
-</p>
-
-<p>
-
-<a href="/auth/youtube">
-
-Connect YouTube
-
-</a>
-
-</p>
-
-<hr>
 
 <form
 action="/upload"
@@ -131,27 +114,20 @@ method="post"
 enctype="multipart/form-data"
 >
 
-Password
-
-<br>
+<p>Password</p>
 
 <input
 name="password"
 type="password"
-style="width:100%;padding:8px;"
->
+/>
 
-<br><br>
-
-Video
-
-<br>
+<p>Video</p>
 
 <input
 name="video"
 type="file"
 accept="video/*"
->
+/>
 
 <br><br>
 
@@ -163,174 +139,7 @@ Upload
 
 </form>
 
-</body>
-
-</html>
-"""
-
-
-@app.get("/auth/youtube")
-def auth_youtube():
-
-    ensure_google_secret()
-
-    verifier = (
-        secrets.token_urlsafe(
-            64
-        )
-    )
-
-    flow = (
-        Flow
-        .from_client_secrets_file(
-
-            CLIENT_SECRETS_FILE,
-
-            scopes=
-            SCOPES,
-
-            redirect_uri=
-            f"{BASE_URL}/oauth2callback",
-
-            code_verifier=
-            verifier
-        )
-    )
-
-    auth_url, state = (
-        flow.authorization_url(
-
-            access_type=
-            "offline",
-
-            prompt=
-            "consent",
-
-            include_granted_scopes=
-            "true",
-
-            code_challenge_method=
-            "S256"
-        )
-    )
-
-    with open(
-        STATE_FILE,
-        "w"
-    ) as f:
-
-        f.write(
-            state
-        )
-
-    with open(
-        CODE_VERIFIER_FILE,
-        "w"
-    ) as f:
-
-        f.write(
-            verifier
-        )
-
-    return RedirectResponse(
-        auth_url
-    )
-
-
-@app.get(
-    "/oauth2callback",
-    response_class=HTMLResponse
-)
-def callback(
-    request: Request
-):
-
-    ensure_google_secret()
-
-    with open(
-        STATE_FILE
-    ) as f:
-
-        state = (
-            f.read()
-        )
-
-    with open(
-        CODE_VERIFIER_FILE
-    ) as f:
-
-        verifier = (
-            f.read()
-        )
-
-    flow = (
-        Flow
-        .from_client_secrets_file(
-
-            CLIENT_SECRETS_FILE,
-
-            scopes=
-            SCOPES,
-
-            state=
-            state,
-
-            redirect_uri=
-            f"{BASE_URL}/oauth2callback",
-
-            code_verifier=
-            verifier
-        )
-    )
-
-    flow.fetch_token(
-        authorization_response=
-        str(
-            request.url
-        )
-    )
-
-    credentials = (
-        flow.credentials
-    )
-
-    with open(
-        YOUTUBE_TOKEN_FILE,
-        "wb"
-    ) as token:
-
-        pickle.dump(
-            credentials,
-            token
-        )
-
-    return """
-<html>
-
-<body
-style="
-font-family:Arial;
-max-width:700px;
-margin:40px auto;
-">
-
-<h2>
-
-YouTube connected ?
-
-</h2>
-
-<p>
-
-Return to uploader
-
-</p>
-
-<a href="/">
-
-Home
-
-</a>
+</div>
 
 </body>
 
@@ -338,10 +147,7 @@ Home
 """
 
 
-@app.post(
-    "/upload",
-    response_class=HTMLResponse
-)
+@app.post("/upload")
 def upload(
     password: str = Form(...),
     video: UploadFile = File(...)
@@ -349,17 +155,9 @@ def upload(
 
     if password != UPLOAD_PASSWORD:
 
-        return """
-        Invalid password
-        """
-
-    if not os.path.exists(
-        YOUTUBE_TOKEN_FILE
-    ):
-
-        return """
-        Connect YouTube first
-        """
+        return HTMLResponse(
+            "<h2>Invalid password</h2>"
+        )
 
     os.makedirs(
         "uploads",
@@ -380,30 +178,189 @@ def upload(
             buffer
         )
 
-    url = (
-        process_and_upload(
+    job_id = str(
+        uuid.uuid4()
+    )
+
+    thread = threading.Thread(
+        target=run_job,
+        args=(
+            job_id,
             path
         )
     )
+
+    thread.start()
+
+    return HTMLResponse(
+f"""
+<html>
+
+<head>
+
+<style>
+
+body{{
+font-family:Arial;
+background:#111827;
+color:white;
+max-width:700px;
+margin:40px auto;
+}}
+
+.bar{{
+height:30px;
+background:#374151;
+border-radius:8px;
+overflow:hidden;
+}}
+
+.fill{{
+height:100%;
+width:0%;
+background:#2563eb;
+transition:all .5s;
+}}
+
+</style>
+
+</head>
+
+<body>
+
+<h1>
+
+Processing…
+
+</h1>
+
+<div class="bar">
+
+<div
+id="fill"
+class="fill"
+>
+
+</div>
+
+</div>
+
+<p
+id="status"
+>
+
+Starting
+
+</p>
+
+<script>
+
+async function refresh(){{
+
+const r=
+await fetch(
+"/status/{job_id}"
+)
+
+const d=
+await r.json()
+
+document
+.getElementById(
+"fill"
+)
+.style.width=
+d.progress+"%"
+
+document
+.getElementById(
+"status"
+)
+.innerHTML=
+d.status
+
+if(d.done){{
+
+if(d.error){{
+
+document.body.innerHTML=
+"<h1>? Error</h1><pre>"+d.error+"</pre>"
+
+}}
+
+else{{
+
+window.location=
+"/complete/{job_id}"
+
+}}
+
+}}
+
+}}
+
+setInterval(
+refresh,
+1000
+)
+
+</script>
+
+</body>
+
+</html>
+"""
+    )
+
+
+@app.get("/status/{job_id}")
+def status(
+    job_id
+):
+
+    return jobs.get(
+        job_id,
+        {}
+    )
+
+
+@app.get(
+"/complete/{job_id}",
+response_class=HTMLResponse
+)
+def complete(
+    job_id
+):
+
+    job = jobs[
+        job_id
+    ]
 
     return f"""
 
 <html>
 
-<body>
+<body
+style="
+font-family:Arial;
+background:#111827;
+color:white;
+max-width:700px;
+margin:40px auto;
+">
 
-<h2>
+<h1>
 
-Upload Complete ?
+? Upload Complete
 
-</h2>
+</h1>
 
 <a
-href="{url}"
+href="{job['youtube_url']}"
 target="_blank"
 >
 
-View Video
+Open Video
 
 </a>
 
