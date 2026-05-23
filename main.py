@@ -2,370 +2,399 @@ import os
 import shutil
 import uuid
 import threading
+import secrets
+import pickle
+from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+
+from google_auth_oauthlib.flow import Flow
 
 from meatball_uploader import process_and_upload
 
 
 app = FastAPI()
 
-UPLOAD_PASSWORD = os.getenv(
-    "UPLOAD_PASSWORD",
-    "meatball"
-)
+UPLOAD_PASSWORD = os.getenv("UPLOAD_PASSWORD", "meatball")
+BASE_URL = os.getenv("BASE_URL", "https://meatball-uploader.onrender.com")
+
+CLIENT_SECRETS_FILE = "/var/data/client_secrets.json"
+YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", "/var/data/youtube_token.pickle")
+STATE_FILE = "/var/data/oauth_state.txt"
+CODE_VERIFIER_FILE = "/var/data/oauth_verifier.txt"
+
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 jobs = {}
 
 
-def run_job(job_id, input_path):
+def ensure_google_secret():
+    if os.path.exists(CLIENT_SECRETS_FILE):
+        return
 
-    try:
+    secret = os.getenv("GOOGLE_CLIENT_SECRET_JSON")
 
-        jobs[job_id] = {
-            "progress": 10,
-            "status": "Starting...",
-            "done": False
-        }
+    if not secret:
+        raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON")
 
-        jobs[job_id]["progress"] = 25
-        jobs[job_id]["status"] = "Processing video..."
+    os.makedirs("/var/data", exist_ok=True)
 
-        youtube_url = process_and_upload(
-            input_path
-        )
+    with open(CLIENT_SECRETS_FILE, "w", encoding="utf-8") as f:
+        f.write(secret)
 
-        jobs[job_id]["progress"] = 100
 
-        jobs[job_id]["status"] = "Complete"
+def page_shell(content):
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Meatball Uploader</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+        body {{
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #111827, #1f2937);
+            color: #f9fafb;
+        }}
 
-        jobs[job_id]["done"] = True
+        .wrap {{
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 36px 18px;
+        }}
 
-        jobs[job_id]["youtube_url"] = youtube_url
+        .card {{
+            background: rgba(17, 24, 39, 0.92);
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 24px;
+            padding: 28px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        }}
 
-    except Exception as e:
+        h1 {{
+            margin: 0 0 8px 0;
+            font-size: 34px;
+        }}
 
-        jobs[job_id] = {
+        .sub {{
+            color: #9ca3af;
+            margin-bottom: 24px;
+        }}
 
-            "progress": 100,
+        .status {{
+            padding: 12px 14px;
+            background: #0f172a;
+            border-radius: 14px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.08);
+        }}
 
-            "status": "Failed",
+        label {{
+            display: block;
+            margin-top: 18px;
+            margin-bottom: 8px;
+            color: #d1d5db;
+            font-weight: bold;
+        }}
 
-            "done": True,
+        input {{
+            width: 100%;
+            box-sizing: border-box;
+            padding: 13px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.15);
+            background: #111827;
+            color: white;
+        }}
 
-            "error": str(e)
-        }
+        button, .button {{
+            display: inline-block;
+            margin-top: 22px;
+            padding: 13px 18px;
+            border-radius: 12px;
+            border: none;
+            background: #3b82f6;
+            color: white;
+            font-weight: bold;
+            text-decoration: none;
+            cursor: pointer;
+        }}
+
+        .button.secondary {{
+            background: #374151;
+        }}
+
+        .bar {{
+            height: 28px;
+            background: #374151;
+            border-radius: 999px;
+            overflow: hidden;
+            margin-top: 24px;
+        }}
+
+        .fill {{
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #3b82f6, #60a5fa);
+            transition: width 0.4s ease;
+        }}
+
+        pre {{
+            white-space: pre-wrap;
+            background: #111827;
+            padding: 16px;
+            border-radius: 12px;
+            color: #fecaca;
+            border: 1px solid rgba(248,113,113,0.35);
+        }}
+
+        .small {{
+            color: #9ca3af;
+            font-size: 14px;
+        }}
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="card">
+            {content}
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    connected = os.path.exists(YOUTUBE_TOKEN_FILE)
+    youtube_status = "Connected" if connected else "Not connected"
 
-    return """
-<html>
+    content = f"""
+        <h1>Meatball Uploader</h1>
+        <div class="sub">Upload a video, add the Meatball logo, generate metadata, and send it to YouTube.</div>
 
-<head>
+        <div class="status">
+            <strong>YouTube:</strong> {youtube_status}
+            <br>
+            <a class="button secondary" href="/auth/youtube">Connect YouTube Account</a>
+        </div>
 
-<style>
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <label>Password</label>
+            <input name="password" type="password" required />
 
-body{
-font-family:Arial;
-background:#111827;
-color:white;
-max-width:700px;
-margin:40px auto;
-}
+            <label>Select video</label>
+            <input name="video" type="file" accept="video/*" required />
 
-.card{
-background:#1f2937;
-padding:30px;
-border-radius:16px;
-}
+            <button type="submit">Upload and Process</button>
+        </form>
 
-button{
-padding:12px 18px;
-background:#2563eb;
-color:white;
-border:none;
-border-radius:8px;
-}
+        <p class="small">Uploads are processed in the background so the page does not time out.</p>
+    """
 
-input{
-width:100%;
-padding:10px;
-margin-top:8px;
-}
-
-</style>
-
-</head>
-
-<body>
-
-<div class="card">
-
-<h1>
-?? Meatball Uploader
-</h1>
-
-<form
-action="/upload"
-method="post"
-enctype="multipart/form-data"
->
-
-<p>Password</p>
-
-<input
-name="password"
-type="password"
-/>
-
-<p>Video</p>
-
-<input
-name="video"
-type="file"
-accept="video/*"
-/>
-
-<br><br>
-
-<button>
-
-Upload
-
-</button>
-
-</form>
-
-</div>
-
-</body>
-
-</html>
-"""
+    return page_shell(content)
 
 
-@app.post("/upload")
-def upload(
-    password: str = Form(...),
-    video: UploadFile = File(...)
-):
+@app.get("/auth/youtube")
+def auth_youtube():
+    ensure_google_secret()
 
+    verifier = secrets.token_urlsafe(64)
+
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        redirect_uri=f"{BASE_URL}/oauth2callback",
+        code_verifier=verifier,
+    )
+
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        include_granted_scopes="true",
+        code_challenge_method="S256",
+    )
+
+    os.makedirs("/var/data", exist_ok=True)
+
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        f.write(state)
+
+    with open(CODE_VERIFIER_FILE, "w", encoding="utf-8") as f:
+        f.write(verifier)
+
+    return RedirectResponse(auth_url)
+
+
+@app.get("/oauth2callback", response_class=HTMLResponse)
+def oauth_callback(request: Request):
+    ensure_google_secret()
+
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        state = f.read()
+
+    with open(CODE_VERIFIER_FILE, "r", encoding="utf-8") as f:
+        verifier = f.read()
+
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        state=state,
+        redirect_uri=f"{BASE_URL}/oauth2callback",
+        code_verifier=verifier,
+    )
+
+    flow.fetch_token(authorization_response=str(request.url))
+
+    credentials = flow.credentials
+
+    os.makedirs(os.path.dirname(YOUTUBE_TOKEN_FILE), exist_ok=True)
+
+    with open(YOUTUBE_TOKEN_FILE, "wb") as token:
+        pickle.dump(credentials, token)
+
+    content = """
+        <h1>YouTube connected</h1>
+        <p>Your YouTube account is now connected.</p>
+        <a class="button" href="/">Back to uploader</a>
+    """
+
+    return page_shell(content)
+
+
+def run_job(job_id, input_path):
+    try:
+        jobs[job_id]["progress"] = 15
+        jobs[job_id]["status"] = "Video received. Starting processing..."
+
+        jobs[job_id]["progress"] = 35
+        jobs[job_id]["status"] = "Adding Meatball logo and preparing video..."
+
+        youtube_url = process_and_upload(input_path)
+
+        jobs[job_id]["progress"] = 100
+        jobs[job_id]["status"] = "Complete"
+        jobs[job_id]["done"] = True
+        jobs[job_id]["youtube_url"] = youtube_url
+
+    except Exception as e:
+        jobs[job_id]["progress"] = 100
+        jobs[job_id]["status"] = "Failed"
+        jobs[job_id]["done"] = True
+        jobs[job_id]["error"] = str(e)
+
+
+@app.post("/upload", response_class=HTMLResponse)
+def upload(password: str = Form(...), video: UploadFile = File(...)):
     if password != UPLOAD_PASSWORD:
+        return page_shell("<h1>Invalid password</h1><p>Please go back and try again.</p>")
 
-        return HTMLResponse(
-            "<h2>Invalid password</h2>"
-        )
+    if not os.path.exists(YOUTUBE_TOKEN_FILE):
+        return page_shell("""
+            <h1>YouTube not connected</h1>
+            <p>Please connect your YouTube account before uploading.</p>
+            <a class="button" href="/auth/youtube">Connect YouTube Account</a>
+        """)
 
-    os.makedirs(
-        "uploads",
-        exist_ok=True
-    )
+    os.makedirs("uploads", exist_ok=True)
 
-    path = (
-        f"uploads/{video.filename}"
-    )
+    safe_filename = video.filename.replace(" ", "_")
+    input_path = f"uploads/{uuid.uuid4()}_{safe_filename}"
 
-    with open(
-        path,
-        "wb"
-    ) as buffer:
+    with open(input_path, "wb") as buffer:
+        shutil.copyfileobj(video.file, buffer)
 
-        shutil.copyfileobj(
-            video.file,
-            buffer
-        )
+    job_id = str(uuid.uuid4())
 
-    job_id = str(
-        uuid.uuid4()
-    )
+    jobs[job_id] = {
+        "progress": 5,
+        "status": "Upload received.",
+        "done": False,
+        "error": None,
+        "youtube_url": None,
+    }
 
-    thread = threading.Thread(
-        target=run_job,
-        args=(
-            job_id,
-            path
-        )
-    )
-
+    thread = threading.Thread(target=run_job, args=(job_id, input_path))
+    thread.daemon = True
     thread.start()
 
-    return HTMLResponse(
-f"""
-<html>
+    content = f"""
+        <h1>Processing video</h1>
+        <p class="sub">Keep this page open while Meatball works his magic.</p>
 
-<head>
+        <div class="bar">
+            <div id="fill" class="fill"></div>
+        </div>
 
-<style>
+        <p id="status">Starting...</p>
 
-body{{
-font-family:Arial;
-background:#111827;
-color:white;
-max-width:700px;
-margin:40px auto;
-}}
+        <script>
+            async function refreshStatus() {{
+                const response = await fetch("/status/{job_id}");
+                const data = await response.json();
 
-.bar{{
-height:30px;
-background:#374151;
-border-radius:8px;
-overflow:hidden;
-}}
+                document.getElementById("fill").style.width = data.progress + "%";
+                document.getElementById("status").innerText = data.status;
 
-.fill{{
-height:100%;
-width:0%;
-background:#2563eb;
-transition:all .5s;
-}}
+                if (data.done) {{
+                    if (data.error) {{
+                        document.body.innerHTML = `
+                            <div class="wrap">
+                                <div class="card">
+                                    <h1>Processing failed</h1>
+                                    <p>Something went wrong.</p>
+                                    <pre>${{data.error}}</pre>
+                                    <a class="button" href="/">Try again</a>
+                                </div>
+                            </div>
+                        `;
+                    }} else {{
+                        window.location.href = "/complete/{job_id}";
+                    }}
+                }}
+            }}
 
-</style>
+            refreshStatus();
+            setInterval(refreshStatus, 1500);
+        </script>
+    """
 
-</head>
-
-<body>
-
-<h1>
-
-Processing...
-
-</h1>
-
-<div class="bar">
-
-<div
-id="fill"
-class="fill"
->
-
-</div>
-
-</div>
-
-<p
-id="status"
->
-
-Starting
-
-</p>
-
-<script>
-
-async function refresh(){{
-
-const r=
-await fetch(
-"/status/{job_id}"
-)
-
-const d=
-await r.json()
-
-document
-.getElementById(
-"fill"
-)
-.style.width=
-d.progress+"%"
-
-document
-.getElementById(
-"status"
-)
-.innerHTML=
-d.status
-
-if(d.done){{
-
-if(d.error){{
-
-document.body.innerHTML=
-"<h1>? Error</h1><pre>"+d.error+"</pre>"
-
-}}
-
-else{{
-
-window.location=
-"/complete/{job_id}"
-
-}}
-
-}}
-
-}}
-
-setInterval(
-refresh,
-1000
-)
-
-</script>
-
-</body>
-
-</html>
-"""
-    )
+    return page_shell(content)
 
 
 @app.get("/status/{job_id}")
-def status(
-    job_id
-):
+def status(job_id: str):
+    return JSONResponse(jobs.get(job_id, {
+        "progress": 0,
+        "status": "Job not found",
+        "done": True,
+        "error": "Job not found",
+    }))
 
-    return jobs.get(
-        job_id,
-        {}
-    )
 
+@app.get("/complete/{job_id}", response_class=HTMLResponse)
+def complete(job_id: str):
+    job = jobs.get(job_id)
 
-@app.get(
-"/complete/{job_id}",
-response_class=HTMLResponse
-)
-def complete(
-    job_id
-):
+    if not job:
+        return page_shell("<h1>Job not found</h1><a class='button' href='/'>Back</a>")
 
-    job = jobs[
-        job_id
-    ]
+    youtube_url = job.get("youtube_url")
 
-    return f"""
+    content = f"""
+        <h1>Upload complete</h1>
+        <p>Your video has been uploaded to YouTube.</p>
+        <a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>
+        <br><br>
+        <a class="button secondary" href="/">Upload another video</a>
+    """
 
-<html>
-
-<body
-style="
-font-family:Arial;
-background:#111827;
-color:white;
-max-width:700px;
-margin:40px auto;
-">
-
-<h1>
-
-? Upload Complete
-
-</h1>
-
-<a
-href="{job['youtube_url']}"
-target="_blank"
->
-
-Open Video
-
-</a>
-
-</body>
-
-</html>
-
-"""
+    return page_shell(content)
