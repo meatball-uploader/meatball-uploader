@@ -2,21 +2,16 @@ import os
 import json
 import base64
 import pickle
+import subprocess
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from moviepy import VideoFileClip, ImageClip, CompositeVideoClip
-
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.auth.transport.requests import Request
 
-
-# -------------------------
-# CONFIG
-# -------------------------
 
 OUTPUT_VIDEO = "output.mp4"
 LOGO_IMAGE = "meatball.png"
@@ -31,59 +26,64 @@ YOUTUBE_TOKEN_FILE = os.getenv(
 
 load_dotenv()
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-# -------------------------
-# VIDEO PROCESSING
-# -------------------------
 
 def add_logo_to_video(input_video_path):
-    video = VideoFileClip(input_video_path)
+    print("Adding logo with FFmpeg...")
 
-    logo = (
-        ImageClip(LOGO_IMAGE)
-        .resized(width=110)
-        .with_opacity(0.60)
-        .with_duration(video.duration)
-        .with_position((video.w - 130, video.h - 130))
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", input_video_path,
+        "-i", LOGO_IMAGE,
+        "-filter_complex",
+        "[1:v]scale=110:-1,format=rgba,colorchannelmixer=aa=0.60[logo];[0:v][logo]overlay=W-w-20:H-h-20",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "28",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        OUTPUT_VIDEO
+    ]
+
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
     )
 
-    final = CompositeVideoClip([video, logo])
+    if result.returncode != 0:
+        raise Exception(result.stderr)
 
-    final.write_videofile(
-        OUTPUT_VIDEO,
-        codec="libx264",
-        audio_codec="aac",
-        fps=video.fps
-    )
+    print("Logo added successfully.")
 
-    video.close()
-    final.close()
-
-
-# -------------------------
-# EXTRACT FRAME
-# -------------------------
 
 def extract_frame():
-    video = VideoFileClip(OUTPUT_VIDEO)
+    print("Extracting frame with FFmpeg...")
 
-    timestamp = min(3, video.duration / 2)
+    command = [
+        "ffmpeg",
+        "-y",
+        "-i", OUTPUT_VIDEO,
+        "-ss", "00:00:03",
+        "-frames:v", "1",
+        FRAME_IMAGE
+    ]
 
-    video.save_frame(
-        FRAME_IMAGE,
-        t=timestamp
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
     )
 
-    video.close()
+    if result.returncode != 0:
+        raise Exception(result.stderr)
 
+    print("Frame extracted successfully.")
 
-# -------------------------
-# OPENAI METADATA
-# -------------------------
 
 def generate_metadata():
     extract_frame()
@@ -153,10 +153,6 @@ Rules:
     return metadata["title"], metadata["description"]
 
 
-# -------------------------
-# YOUTUBE AUTH
-# -------------------------
-
 def get_youtube_service():
     if not os.path.exists(YOUTUBE_TOKEN_FILE):
         raise FileNotFoundError(
@@ -182,10 +178,6 @@ def get_youtube_service():
         credentials=credentials
     )
 
-
-# -------------------------
-# UPLOAD TO YOUTUBE
-# -------------------------
 
 def upload_video(title, description):
     youtube = get_youtube_service()
@@ -226,10 +218,6 @@ def upload_video(title, description):
     return youtube_url
 
 
-# -------------------------
-# MAIN PROCESS FUNCTION
-# -------------------------
-
 def process_and_upload(input_video_path):
     print("\nAdding logo...")
     add_logo_to_video(input_video_path)
@@ -247,10 +235,6 @@ def process_and_upload(input_video_path):
 
     return youtube_url
 
-
-# -------------------------
-# LOCAL TESTING ONLY
-# -------------------------
 
 if __name__ == "__main__":
     process_and_upload("input.mp4")
