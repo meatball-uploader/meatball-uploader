@@ -47,21 +47,23 @@ def run_ffmpeg(command):
 
 
 def add_logo_to_video(input_video_path):
-    print("Adding logo with FFmpeg...")
+    print("Adding logo with low-memory FFmpeg...")
 
     command = [
         "ffmpeg",
         "-y",
+        "-threads", "1",
         "-i", input_video_path,
         "-i", LOGO_IMAGE,
         "-filter_complex",
-        "[1:v]scale=110:-1,format=rgba,colorchannelmixer=aa=0.60[logo];"
-        "[0:v][logo]overlay=W-w-20:H-h-20,format=yuv420p",
+        "[0:v]scale='min(720,iw)':-2[base];"
+        "[1:v]scale=90:-1,format=rgba,colorchannelmixer=aa=0.55[logo];"
+        "[base][logo]overlay=W-w-18:H-h-18,format=yuv420p",
         "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "28",
+        "-preset", "ultrafast",
+        "-crf", "30",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "96k",
         "-movflags", "+faststart",
         OUTPUT_VIDEO
     ]
@@ -77,10 +79,11 @@ def extract_frame():
     command = [
         "ffmpeg",
         "-y",
+        "-threads", "1",
         "-ss", "00:00:03",
         "-i", OUTPUT_VIDEO,
         "-frames:v", "1",
-        "-q:v", "2",
+        "-q:v", "3",
         FRAME_IMAGE
     ]
 
@@ -218,10 +221,10 @@ def upload_video(title, description):
     return youtube_url
 
 
-def cleanup_files():
-    for file_path in [OUTPUT_VIDEO, FRAME_IMAGE]:
+def cleanup_files(input_video_path=None):
+    for file_path in [OUTPUT_VIDEO, FRAME_IMAGE, input_video_path]:
         try:
-            if os.path.exists(file_path):
+            if file_path and os.path.exists(file_path):
                 os.remove(file_path)
         except Exception:
             pass
@@ -246,7 +249,7 @@ def process_and_upload(input_video_path):
         return youtube_url
 
     finally:
-        cleanup_files()
+        cleanup_files(input_video_path)
 
 
 if __name__ == "__main__":
