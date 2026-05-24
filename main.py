@@ -278,7 +278,7 @@ def history():
 
         rows.append(f"""
             <tr>
-                <td>{job_id[:8]}</td>
+                <td><a href="/job/{job_id}">{job_id[:8]}</a></td>
                 <td>{progress}%</td>
                 <td>{status}</td>
                 <td>{result}</td>
@@ -507,3 +507,50 @@ def complete(job_id: str):
     """
 
     return page_shell(content)
+    
+     
+@app.get("/job/{job_id}", response_class=HTMLResponse)
+def job_detail(job_id: str):
+    job = read_job(job_id)
+
+    youtube_url = job.get("youtube_url")
+    error = job.get("error")
+
+    youtube_section = (
+        f'<a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>'
+        if youtube_url
+        else "<p>No YouTube URL yet.</p>"
+    )
+
+    error_section = (
+        f"<h3>Error</h3><pre>{error}</pre>"
+        if error
+        else ""
+    )
+
+    details = json.dumps(job, indent=2)
+
+    return page_shell(f"""
+        <h1>Job Details</h1>
+
+        <div class="status">
+            <strong>Status:</strong> {job.get("status")}<br>
+            <strong>Progress:</strong> {job.get("progress")}%
+        </div>
+
+        {youtube_section}
+
+        {error_section}
+
+        <h3>Raw Job Data</h3>
+
+        <pre>{details}</pre>
+
+        <a class="button secondary" href="/history">
+            Back to history
+        </a>
+
+        <a class="button secondary" href="/">
+            Back to uploader
+        </a>
+    """)
