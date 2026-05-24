@@ -5,6 +5,7 @@ import uuid
 import threading
 import secrets
 import pickle
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -28,6 +29,19 @@ STATE_FILE = f"{DATA_DIR}/oauth_state.txt"
 CODE_VERIFIER_FILE = f"{DATA_DIR}/oauth_verifier.txt"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def duration_seconds(started_at, completed_at):
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(completed_at)
+        return round((end - start).total_seconds(), 2)
+    except Exception:
+        return None
 
 
 def ensure_dirs():
@@ -280,6 +294,9 @@ def history():
         error = job.get("error")
         youtube_url = job.get("youtube_url")
         title = job.get("title") or ""
+        duration = job.get("duration_seconds")
+
+        duration_text = f"{duration}s" if duration is not None else "-"
 
         if error:
             result = f"<span style='color:#fca5a5;'>Failed</span><br><small>{error}</small>"
@@ -294,6 +311,7 @@ def history():
             <tr>
                 <td><a href="/job/{job_id}">{job_id[:8]}</a></td>
                 <td>{progress}%</td>
+                <td>{duration_text}</td>
                 <td>{status}<br><small>{title}</small></td>
                 <td>{result}</td>
             </tr>
@@ -301,7 +319,7 @@ def history():
 
     table_rows = "\n".join(rows) if rows else """
         <tr>
-            <td colspan="4">No jobs yet.</td>
+            <td colspan="5">No jobs yet.</td>
         </tr>
     """
 
@@ -313,6 +331,7 @@ def history():
             <tr>
                 <th align="left">Job</th>
                 <th align="left">Progress</th>
+                <th align="left">Duration</th>
                 <th align="left">Status</th>
                 <th align="left">Result</th>
             </tr>
@@ -386,7 +405,12 @@ def oauth_callback(request: Request):
 
 def run_job(job_id, input_path):
     try:
-        update_job(job_id, progress=10, status="Video received. Starting job...")
+        update_job(
+            job_id,
+            progress=10,
+            status="Video received. Starting job...",
+            started_at=now_iso(),
+        )
 
         def progress_callback(percent, message):
             update_job(job_id, progress=percent, status=message)
@@ -400,6 +424,10 @@ def run_job(job_id, input_path):
         title = result.get("title")
         description = result.get("description")
 
+        completed_at = now_iso()
+        job = read_job(job_id)
+        duration = duration_seconds(job.get("started_at"), completed_at)
+
         update_job(
             job_id,
             progress=100,
@@ -408,15 +436,23 @@ def run_job(job_id, input_path):
             youtube_url=youtube_url,
             title=title,
             description=description,
+            completed_at=completed_at,
+            duration_seconds=duration,
         )
 
     except Exception as e:
+        completed_at = now_iso()
+        job = read_job(job_id)
+        duration = duration_seconds(job.get("started_at"), completed_at)
+
         update_job(
             job_id,
             progress=100,
             status="Failed",
             done=True,
             error=str(e),
+            completed_at=completed_at,
+            duration_seconds=duration,
         )
 
 
@@ -436,6 +472,7 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
 
     safe_filename = video.filename.replace(" ", "_")
     input_path = f"uploads/{uuid.uuid4()}_{safe_filename}"
+    created_at = now_iso()
 
     with open(input_path, "wb") as buffer:
         shutil.copyfileobj(video.file, buffer)
@@ -451,6 +488,10 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
         "title": None,
         "description": None,
         "input_filename": video.filename,
+        "created_at": created_at,
+        "started_at": None,
+        "completed_at": None,
+        "duration_seconds": None,
     })
 
     thread = threading.Thread(target=run_job, args=(job_id, input_path))
@@ -521,10 +562,18 @@ def complete(job_id: str):
     youtube_url = job.get("youtube_url")
     title = job.get("title") or "No title saved."
     description = job.get("description") or "No description saved."
+    duration = job.get("duration_seconds")
+
+    duration_text = f"{duration}s" if duration is not None else "-"
 
     content = f"""
         <h1>Upload complete</h1>
         <p>Your video has been uploaded to YouTube.</p>
+
+        <div class="status">
+            <strong>Duration:</strong> {duration_text}<br>
+            <strong>Completed:</strong> {job.get("completed_at")}
+        </div>
 
         <h3>Generated Title</h3>
         <div class="metadata-box">{title}</div>
@@ -570,7 +619,11 @@ def job_detail(job_id: str):
         <div class="status">
             <strong>Status:</strong> {job.get("status")}<br>
             <strong>Progress:</strong> {job.get("progress")}%<br>
-            <strong>Input File:</strong> {job.get("input_filename")}
+            <strong>Input File:</strong> {job.get("input_filename")}<br>
+            <strong>Created:</strong> {job.get("created_at")}<br>
+            <strong>Started:</strong> {job.get("started_at")}<br>
+            <strong>Completed:</strong> {job.get("completed_at")}<br>
+            <strong>Duration:</strong> {job.get("duration_seconds")}s
         </div>
 
         <h3>Generated Title</h3>
