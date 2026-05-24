@@ -20,7 +20,7 @@ OUTPUT_VIDEO = f"/tmp/output_{JOB_ID}.mp4"
 FRAME_IMAGE = f"/tmp/frame_{JOB_ID}.jpg"
 LOGO_IMAGE = "meatball.png"
 
-PRIVACY_STATUS = "public"
+PRIVACY_STATUS = "private"
 
 YOUTUBE_TOKEN_FILE = os.getenv(
     "YOUTUBE_TOKEN_FILE",
@@ -30,6 +30,12 @@ YOUTUBE_TOKEN_FILE = os.getenv(
 load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def report(progress_callback, percent, message):
+    print(message)
+    if progress_callback:
+        progress_callback(percent, message)
 
 
 def run_ffmpeg(command):
@@ -47,8 +53,6 @@ def run_ffmpeg(command):
 
 
 def add_logo_to_video(input_video_path):
-    print("Adding logo with low-memory FFmpeg...")
-
     command = [
         "ffmpeg",
         "-y",
@@ -70,12 +74,8 @@ def add_logo_to_video(input_video_path):
 
     run_ffmpeg(command)
 
-    print("Logo added successfully.")
-
 
 def extract_frame():
-    print("Extracting frame with FFmpeg...")
-
     command = [
         "ffmpeg",
         "-y",
@@ -89,12 +89,12 @@ def extract_frame():
 
     run_ffmpeg(command)
 
-    print("Frame extracted successfully.")
 
-
-def generate_metadata():
+def generate_metadata(progress_callback=None):
+    report(progress_callback, 55, "Extracting a frame from the video...")
     extract_frame()
 
+    report(progress_callback, 65, "Sending video frame to AI...")
     image_bytes = Path(FRAME_IMAGE).read_bytes()
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -151,12 +151,12 @@ Rules:
     try:
         metadata = json.loads(raw)
     except Exception:
-        print("\nBad JSON. Using fallback metadata.")
         metadata = {
             "title": "Meatball The Frenchie Being Adorable",
             "description": "Watch Meatball being adorable. #Frenchie #FrenchBulldog #Dogs #DogShorts"
         }
 
+    report(progress_callback, 75, "AI title and description generated.")
     return metadata["title"], metadata["description"]
 
 
@@ -208,17 +208,10 @@ def upload_video(title, description):
         media_body=media
     )
 
-    print("\nUploading to YouTube...")
-
     response = request.execute()
 
     video_id = response["id"]
-    youtube_url = f"https://youtube.com/watch?v={video_id}"
-
-    print("\nDONE")
-    print(youtube_url)
-
-    return youtube_url
+    return f"https://youtube.com/watch?v={video_id}"
 
 
 def cleanup_files(input_video_path=None):
@@ -230,13 +223,17 @@ def cleanup_files(input_video_path=None):
             pass
 
 
-def process_and_upload(input_video_path):
+def process_and_upload(input_video_path, progress_callback=None):
     try:
-        print("\nAdding logo...")
+        report(progress_callback, 20, "Starting video processing...")
+
+        report(progress_callback, 35, "Adding Meatball logo...")
         add_logo_to_video(input_video_path)
 
-        print("\nGenerating metadata...")
-        title, description = generate_metadata()
+        report(progress_callback, 50, "Logo added successfully.")
+
+        report(progress_callback, 60, "Generating title and description...")
+        title, description = generate_metadata(progress_callback)
 
         print("\nTITLE:")
         print(title)
@@ -244,8 +241,10 @@ def process_and_upload(input_video_path):
         print("\nDESCRIPTION:")
         print(description)
 
+        report(progress_callback, 85, "Uploading video to YouTube as private...")
         youtube_url = upload_video(title, description)
 
+        report(progress_callback, 100, "Upload complete.")
         return youtube_url
 
     finally:

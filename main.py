@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import uuid
 import threading
@@ -19,17 +20,56 @@ app = FastAPI()
 UPLOAD_PASSWORD = os.getenv("UPLOAD_PASSWORD", "meatball")
 BASE_URL = os.getenv("BASE_URL", "https://meatball-uploader.onrender.com")
 
-CLIENT_SECRETS_FILE = "/var/data/client_secrets.json"
-YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", "/var/data/youtube_token.pickle")
-STATE_FILE = "/var/data/oauth_state.txt"
-CODE_VERIFIER_FILE = "/var/data/oauth_verifier.txt"
+DATA_DIR = "/var/data"
+JOBS_DIR = f"{DATA_DIR}/jobs"
+
+CLIENT_SECRETS_FILE = f"{DATA_DIR}/client_secrets.json"
+YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", f"{DATA_DIR}/youtube_token.pickle")
+STATE_FILE = f"{DATA_DIR}/oauth_state.txt"
+CODE_VERIFIER_FILE = f"{DATA_DIR}/oauth_verifier.txt"
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-jobs = {}
+
+def ensure_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(JOBS_DIR, exist_ok=True)
+    os.makedirs("uploads", exist_ok=True)
+
+
+def job_file(job_id):
+    return f"{JOBS_DIR}/{job_id}.json"
+
+
+def write_job(job_id, data):
+    ensure_dirs()
+    with open(job_file(job_id), "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def read_job(job_id):
+    path = job_file(job_id)
+    if not os.path.exists(path):
+        return {
+            "progress": 100,
+            "status": "Job not found. The server may have restarted before the job status was saved.",
+            "done": True,
+            "error": "Job not found"
+        }
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def update_job(job_id, **kwargs):
+    data = read_job(job_id)
+    data.update(kwargs)
+    write_job(job_id, data)
 
 
 def ensure_google_secret():
+    ensure_dirs()
+
     if os.path.exists(CLIENT_SECRETS_FILE):
         return
 
@@ -37,8 +77,6 @@ def ensure_google_secret():
 
     if not secret:
         raise Exception("Missing GOOGLE_CLIENT_SECRET_JSON")
-
-    os.makedirs("/var/data", exist_ok=True)
 
     with open(CLIENT_SECRETS_FILE, "w", encoding="utf-8") as f:
         f.write(secret)
@@ -174,6 +212,8 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    ensure_dirs()
+
     connected = os.path.exists(YOUTUBE_TOKEN_FILE)
     youtube_status = "Connected" if connected else "Not connected"
 
@@ -197,7 +237,7 @@ def home():
             <button type="submit">Upload and Process</button>
         </form>
 
-        <p class="small">Uploads are processed in the background so the page does not time out.</p>
+        <p class="small">Uploads are processed in the background and status is saved to disk.</p>
     """
 
     return page_shell(content)
@@ -222,8 +262,6 @@ def auth_youtube():
         include_granted_scopes="true",
         code_challenge_method="S256",
     )
-
-    os.makedirs("/var/data", exist_ok=True)
 
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         f.write(state)
@@ -253,47 +291,66 @@ def oauth_callback(request: Request):
     )
 
     flow.fetch_token(authorization_response=str(request.url))
-
     credentials = flow.credentials
-
-    os.makedirs(os.path.dirname(YOUTUBE_TOKEN_FILE), exist_ok=True)
 
     with open(YOUTUBE_TOKEN_FILE, "wb") as token:
         pickle.dump(credentials, token)
 
-    content = """
+    return page_shell("""
         <h1>YouTube connected</h1>
         <p>Your YouTube account is now connected.</p>
         <a class="button" href="/">Back to uploader</a>
-    """
-
-    return page_shell(content)
+    """)
 
 
 def run_job(job_id, input_path):
     try:
-        jobs[job_id]["progress"] = 15
-        jobs[job_id]["status"] = "Video received. Starting processing..."
+        update_job(
+            job_id,
+            progress=15,
+            status="Video received. Starting processing..."
+        )
 
-        jobs[job_id]["progress"] = 35
-        jobs[job_id]["status"] = "Adding Meatball logo and preparing video..."
+        update_job(
+            job_id,
+            progress=35,
+            status="Adding Meatball logo and preparing video..."
+        )
 
-        youtube_url = process_and_upload(input_path)
+def progress_callback(percent, message):
+    update_job(
+        job_id,
+        progress=percent,
+        status=message
+    )
 
-        jobs[job_id]["progress"] = 100
-        jobs[job_id]["status"] = "Complete"
-        jobs[job_id]["done"] = True
-        jobs[job_id]["youtube_url"] = youtube_url
+youtube_url = process_and_upload(
+    input_path,
+    progress_callback=progress_callback
+)
+
+        update_job(
+            job_id,
+            progress=100,
+            status="Complete",
+            done=True,
+            youtube_url=youtube_url
+        )
 
     except Exception as e:
-        jobs[job_id]["progress"] = 100
-        jobs[job_id]["status"] = "Failed"
-        jobs[job_id]["done"] = True
-        jobs[job_id]["error"] = str(e)
+        update_job(
+            job_id,
+            progress=100,
+            status="Failed",
+            done=True,
+            error=str(e)
+        )
 
 
 @app.post("/upload", response_class=HTMLResponse)
 def upload(password: str = Form(...), video: UploadFile = File(...)):
+    ensure_dirs()
+
     if password != UPLOAD_PASSWORD:
         return page_shell("<h1>Invalid password</h1><p>Please go back and try again.</p>")
 
@@ -304,8 +361,6 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
             <a class="button" href="/auth/youtube">Connect YouTube Account</a>
         """)
 
-    os.makedirs("uploads", exist_ok=True)
-
     safe_filename = video.filename.replace(" ", "_")
     input_path = f"uploads/{uuid.uuid4()}_{safe_filename}"
 
@@ -314,13 +369,13 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
 
     job_id = str(uuid.uuid4())
 
-    jobs[job_id] = {
+    write_job(job_id, {
         "progress": 5,
         "status": "Upload received.",
         "done": False,
         "error": None,
         "youtube_url": None,
-    }
+    })
 
     thread = threading.Thread(target=run_job, args=(job_id, input_path))
     thread.daemon = True
@@ -372,20 +427,20 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
 
 @app.get("/status/{job_id}")
 def status(job_id: str):
-    return JSONResponse(jobs.get(job_id, {
-        "progress": 0,
-        "status": "Job not found",
-        "done": True,
-        "error": "Job not found",
-    }))
+    return JSONResponse(read_job(job_id))
 
 
 @app.get("/complete/{job_id}", response_class=HTMLResponse)
 def complete(job_id: str):
-    job = jobs.get(job_id)
+    job = read_job(job_id)
 
-    if not job:
-        return page_shell("<h1>Job not found</h1><a class='button' href='/'>Back</a>")
+    if job.get("error"):
+        return page_shell(f"""
+            <h1>Processing failed</h1>
+            <p>Something went wrong.</p>
+            <pre>{job.get("error")}</pre>
+            <a class="button" href="/">Try again</a>
+        """)
 
     youtube_url = job.get("youtube_url")
 
