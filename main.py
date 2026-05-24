@@ -5,7 +5,6 @@ import uuid
 import threading
 import secrets
 import pickle
-from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -55,7 +54,7 @@ def read_job(job_id):
             "progress": 100,
             "status": "Job not found.",
             "done": True,
-            "error": "Job not found. The server may have restarted before the job status was saved.",
+            "error": "Job not found.",
             "youtube_url": None,
         }
 
@@ -98,13 +97,11 @@ def page_shell(content):
             background: linear-gradient(135deg, #111827, #1f2937);
             color: #f9fafb;
         }}
-
         .wrap {{
-            max-width: 760px;
+            max-width: 860px;
             margin: 0 auto;
             padding: 36px 18px;
         }}
-
         .card {{
             background: rgba(17, 24, 39, 0.92);
             border: 1px solid rgba(255,255,255,0.12);
@@ -112,17 +109,14 @@ def page_shell(content):
             padding: 28px;
             box-shadow: 0 20px 60px rgba(0,0,0,0.35);
         }}
-
         h1 {{
             margin: 0 0 8px 0;
             font-size: 34px;
         }}
-
         .sub {{
             color: #9ca3af;
             margin-bottom: 24px;
         }}
-
         .status {{
             padding: 12px 14px;
             background: #0f172a;
@@ -130,7 +124,6 @@ def page_shell(content):
             margin-bottom: 20px;
             border: 1px solid rgba(255,255,255,0.08);
         }}
-
         label {{
             display: block;
             margin-top: 18px;
@@ -138,7 +131,6 @@ def page_shell(content):
             color: #d1d5db;
             font-weight: bold;
         }}
-
         input {{
             width: 100%;
             box-sizing: border-box;
@@ -148,10 +140,10 @@ def page_shell(content):
             background: #111827;
             color: white;
         }}
-
         button, .button {{
             display: inline-block;
-            margin-top: 22px;
+            margin-top: 14px;
+            margin-right: 8px;
             padding: 13px 18px;
             border-radius: 12px;
             border: none;
@@ -161,11 +153,9 @@ def page_shell(content):
             text-decoration: none;
             cursor: pointer;
         }}
-
         .button.secondary {{
             background: #374151;
         }}
-
         .bar {{
             height: 28px;
             background: #374151;
@@ -173,14 +163,12 @@ def page_shell(content):
             overflow: hidden;
             margin-top: 24px;
         }}
-
         .fill {{
             height: 100%;
             width: 0%;
             background: linear-gradient(90deg, #3b82f6, #60a5fa);
             transition: width 0.4s ease;
         }}
-
         pre {{
             white-space: pre-wrap;
             background: #111827;
@@ -189,7 +177,22 @@ def page_shell(content):
             color: #fecaca;
             border: 1px solid rgba(248,113,113,0.35);
         }}
-
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }}
+        th, td {{
+            border-bottom: 1px solid rgba(255,255,255,0.12);
+            padding: 12px 8px;
+            vertical-align: top;
+        }}
+        th {{
+            color: #d1d5db;
+        }}
+        a {{
+            color: #93c5fd;
+        }}
         .small {{
             color: #9ca3af;
             font-size: 14px;
@@ -227,6 +230,7 @@ def home():
             <strong>YouTube:</strong> {youtube_status}
             <br>
             <a class="button secondary" href="/auth/youtube">Connect YouTube Account</a>
+            <a class="button secondary" href="/history">View Job History</a>
         </div>
 
         <form action="/upload" method="post" enctype="multipart/form-data">
@@ -243,6 +247,67 @@ def home():
     """
 
     return page_shell(content)
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history():
+    ensure_dirs()
+
+    rows = []
+
+    for file_name in sorted(os.listdir(JOBS_DIR), reverse=True):
+        if not file_name.endswith(".json"):
+            continue
+
+        job_id = file_name.replace(".json", "")
+        job = read_job(job_id)
+
+        status = job.get("status", "")
+        progress = job.get("progress", 0)
+        error = job.get("error")
+        youtube_url = job.get("youtube_url")
+
+        if error:
+            result = f"<span style='color:#fca5a5;'>Failed</span><br><small>{error}</small>"
+        elif youtube_url:
+            result = f"<a href='{youtube_url}' target='_blank'>Open video</a>"
+        elif job.get("done"):
+            result = "Done"
+        else:
+            result = "In progress"
+
+        rows.append(f"""
+            <tr>
+                <td>{job_id[:8]}</td>
+                <td>{progress}%</td>
+                <td>{status}</td>
+                <td>{result}</td>
+            </tr>
+        """)
+
+    table_rows = "\\n".join(rows) if rows else """
+        <tr>
+            <td colspan="4">No jobs yet.</td>
+        </tr>
+    """
+
+    return page_shell(f"""
+        <h1>Job History</h1>
+        <p class="sub">Recent uploads and processing results.</p>
+
+        <table>
+            <tr>
+                <th align="left">Job</th>
+                <th align="left">Progress</th>
+                <th align="left">Status</th>
+                <th align="left">Result</th>
+            </tr>
+            {table_rows}
+        </table>
+
+        <br>
+        <a class="button secondary" href="/">Back to uploader</a>
+    """)
 
 
 @app.get("/auth/youtube")
@@ -310,11 +375,7 @@ def run_job(job_id, input_path):
         update_job(job_id, progress=10, status="Video received. Starting job...")
 
         def progress_callback(percent, message):
-            update_job(
-                job_id,
-                progress=percent,
-                status=message,
-            )
+            update_job(job_id, progress=percent, status=message)
 
         youtube_url = process_and_upload(
             input_path,
@@ -442,6 +503,7 @@ def complete(job_id: str):
         <a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>
         <br><br>
         <a class="button secondary" href="/">Upload another video</a>
+        <a class="button secondary" href="/history">View Job History</a>
     """
 
     return page_shell(content)
