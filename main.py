@@ -49,12 +49,14 @@ def write_job(job_id, data):
 
 def read_job(job_id):
     path = job_file(job_id)
+
     if not os.path.exists(path):
         return {
             "progress": 100,
-            "status": "Job not found. The server may have restarted before the job status was saved.",
+            "status": "Job not found.",
             "done": True,
-            "error": "Job not found"
+            "error": "Job not found. The server may have restarted before the job status was saved.",
+            "youtube_url": None,
         }
 
     with open(path, "r", encoding="utf-8") as f:
@@ -305,36 +307,26 @@ def oauth_callback(request: Request):
 
 def run_job(job_id, input_path):
     try:
-        update_job(
-            job_id,
-            progress=15,
-            status="Video received. Starting processing..."
+        update_job(job_id, progress=10, status="Video received. Starting job...")
+
+        def progress_callback(percent, message):
+            update_job(
+                job_id,
+                progress=percent,
+                status=message,
+            )
+
+        youtube_url = process_and_upload(
+            input_path,
+            progress_callback=progress_callback,
         )
-
-        update_job(
-            job_id,
-            progress=35,
-            status="Adding Meatball logo and preparing video..."
-        )
-
-def progress_callback(percent, message):
-    update_job(
-        job_id,
-        progress=percent,
-        status=message
-    )
-
-youtube_url = process_and_upload(
-    input_path,
-    progress_callback=progress_callback
-)
 
         update_job(
             job_id,
             progress=100,
             status="Complete",
             done=True,
-            youtube_url=youtube_url
+            youtube_url=youtube_url,
         )
 
     except Exception as e:
@@ -343,7 +335,7 @@ youtube_url = process_and_upload(
             progress=100,
             status="Failed",
             done=True,
-            error=str(e)
+            error=str(e),
         )
 
 
