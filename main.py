@@ -56,6 +56,8 @@ def read_job(job_id):
             "done": True,
             "error": "Job not found.",
             "youtube_url": None,
+            "title": None,
+            "description": None,
         }
 
     with open(path, "r", encoding="utf-8") as f:
@@ -112,6 +114,9 @@ def page_shell(content):
         h1 {{
             margin: 0 0 8px 0;
             font-size: 34px;
+        }}
+        h3 {{
+            margin-top: 26px;
         }}
         .sub {{
             color: #9ca3af;
@@ -176,6 +181,14 @@ def page_shell(content):
             border-radius: 12px;
             color: #fecaca;
             border: 1px solid rgba(248,113,113,0.35);
+        }}
+        .metadata-box {{
+            white-space: pre-wrap;
+            background: #0f172a;
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.10);
+            color: #e5e7eb;
         }}
         table {{
             width: 100%;
@@ -266,6 +279,7 @@ def history():
         progress = job.get("progress", 0)
         error = job.get("error")
         youtube_url = job.get("youtube_url")
+        title = job.get("title") or ""
 
         if error:
             result = f"<span style='color:#fca5a5;'>Failed</span><br><small>{error}</small>"
@@ -280,12 +294,12 @@ def history():
             <tr>
                 <td><a href="/job/{job_id}">{job_id[:8]}</a></td>
                 <td>{progress}%</td>
-                <td>{status}</td>
+                <td>{status}<br><small>{title}</small></td>
                 <td>{result}</td>
             </tr>
         """)
 
-    table_rows = "\\n".join(rows) if rows else """
+    table_rows = "\n".join(rows) if rows else """
         <tr>
             <td colspan="4">No jobs yet.</td>
         </tr>
@@ -377,10 +391,14 @@ def run_job(job_id, input_path):
         def progress_callback(percent, message):
             update_job(job_id, progress=percent, status=message)
 
-        youtube_url = process_and_upload(
+        result = process_and_upload(
             input_path,
             progress_callback=progress_callback,
         )
+
+        youtube_url = result.get("youtube_url")
+        title = result.get("title")
+        description = result.get("description")
 
         update_job(
             job_id,
@@ -388,6 +406,8 @@ def run_job(job_id, input_path):
             status="Complete",
             done=True,
             youtube_url=youtube_url,
+            title=title,
+            description=description,
         )
 
     except Exception as e:
@@ -428,6 +448,9 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
         "done": False,
         "error": None,
         "youtube_url": None,
+        "title": None,
+        "description": None,
+        "input_filename": video.filename,
     })
 
     thread = threading.Thread(target=run_job, args=(job_id, input_path))
@@ -496,10 +519,19 @@ def complete(job_id: str):
         """)
 
     youtube_url = job.get("youtube_url")
+    title = job.get("title") or "No title saved."
+    description = job.get("description") or "No description saved."
 
     content = f"""
         <h1>Upload complete</h1>
         <p>Your video has been uploaded to YouTube.</p>
+
+        <h3>Generated Title</h3>
+        <div class="metadata-box">{title}</div>
+
+        <h3>Generated Description</h3>
+        <div class="metadata-box">{description}</div>
+
         <a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>
         <br><br>
         <a class="button secondary" href="/">Upload another video</a>
@@ -507,14 +539,16 @@ def complete(job_id: str):
     """
 
     return page_shell(content)
-    
-     
+
+
 @app.get("/job/{job_id}", response_class=HTMLResponse)
 def job_detail(job_id: str):
     job = read_job(job_id)
 
     youtube_url = job.get("youtube_url")
     error = job.get("error")
+    title = job.get("title") or "No title saved."
+    description = job.get("description") or "No description saved."
 
     youtube_section = (
         f'<a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>'
@@ -535,22 +569,23 @@ def job_detail(job_id: str):
 
         <div class="status">
             <strong>Status:</strong> {job.get("status")}<br>
-            <strong>Progress:</strong> {job.get("progress")}%
+            <strong>Progress:</strong> {job.get("progress")}%<br>
+            <strong>Input File:</strong> {job.get("input_filename")}
         </div>
+
+        <h3>Generated Title</h3>
+        <div class="metadata-box">{title}</div>
+
+        <h3>Generated Description</h3>
+        <div class="metadata-box">{description}</div>
 
         {youtube_section}
 
         {error_section}
 
         <h3>Raw Job Data</h3>
-
         <pre>{details}</pre>
 
-        <a class="button secondary" href="/history">
-            Back to history
-        </a>
-
-        <a class="button secondary" href="/">
-            Back to uploader
-        </a>
+        <a class="button secondary" href="/history">Back to history</a>
+        <a class="button secondary" href="/">Back to uploader</a>
     """)

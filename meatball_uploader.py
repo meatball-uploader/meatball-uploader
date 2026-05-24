@@ -20,7 +20,7 @@ OUTPUT_VIDEO = f"/tmp/output_{JOB_ID}.mp4"
 FRAME_IMAGE = f"/tmp/frame_{JOB_ID}.jpg"
 LOGO_IMAGE = "meatball.png"
 
-PRIVACY_STATUS = "private"
+PRIVACY_STATUS = "public"
 
 YOUTUBE_TOKEN_FILE = os.getenv(
     "YOUTUBE_TOKEN_FILE",
@@ -95,6 +95,7 @@ def generate_metadata(progress_callback=None):
     extract_frame()
 
     report(progress_callback, 65, "Sending video frame to AI...")
+
     image_bytes = Path(FRAME_IMAGE).read_bytes()
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
@@ -157,6 +158,7 @@ Rules:
         }
 
     report(progress_callback, 75, "AI title and description generated.")
+
     return metadata["title"], metadata["description"]
 
 
@@ -245,7 +247,12 @@ def process_and_upload(input_video_path, progress_callback=None):
         youtube_url = upload_video(title, description)
 
         report(progress_callback, 100, "Upload complete.")
-        return youtube_url
+
+        return {
+            "youtube_url": youtube_url,
+            "title": title,
+            "description": description
+        }
 
     finally:
         cleanup_files(input_video_path)
