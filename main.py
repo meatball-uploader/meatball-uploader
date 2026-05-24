@@ -27,7 +27,9 @@ CLIENT_SECRETS_FILE = f"{DATA_DIR}/client_secrets.json"
 YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", f"{DATA_DIR}/youtube_token.pickle")
 STATE_FILE = f"{DATA_DIR}/oauth_state.txt"
 CODE_VERIFIER_FILE = f"{DATA_DIR}/oauth_verifier.txt"
-
+MAX_UPLOAD_SIZE_MB = 100
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+ALLOWED_EXTENSIONS = [".mp4", ".mov", ".m4v"]
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 
@@ -469,7 +471,48 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
             <p>Please connect your YouTube account before uploading.</p>
             <a class="button" href="/auth/youtube">Connect YouTube Account</a>
         """)
+    # ? INSERT NEW CODE HERE
 
+    file_ext = os.path.splitext(video.filename)[1].lower()
+
+    if file_ext not in ALLOWED_EXTENSIONS:
+        return page_shell(f"""
+            <h1>Unsupported file type</h1>
+
+            <p>Allowed:</p>
+
+            <pre>{", ".join(ALLOWED_EXTENSIONS)}</pre>
+
+            <a class="button" href="/">
+                Back
+            </a>
+        """)
+
+    video.file.seek(0, os.SEEK_END)
+    file_size = video.file.tell()
+    video.file.seek(0)
+
+    if file_size > MAX_UPLOAD_SIZE_BYTES:
+        size_mb = round(file_size / 1024 / 1024, 2)
+
+        return page_shell(f"""
+            <h1>Video too large</h1>
+
+            <p>
+                Uploaded:
+                {size_mb} MB
+            </p>
+
+            <p>
+                Limit:
+                {MAX_UPLOAD_SIZE_MB} MB
+            </p>
+
+            <a class="button" href="/">
+                Back
+            </a>
+        """)
+        	
     safe_filename = video.filename.replace(" ", "_")
     input_path = f"uploads/{uuid.uuid4()}_{safe_filename}"
     created_at = now_iso()
