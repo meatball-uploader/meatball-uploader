@@ -258,8 +258,17 @@ def home():
         <div class="status">
             <strong>YouTube:</strong> {youtube_status}
             <br>
-            <a class="button secondary" href="/auth/youtube">Connect YouTube Account</a>
-            <a class="button secondary" href="/history">View Job History</a>
+<a class="button secondary" href="/auth/youtube">
+Connect YouTube Account
+</a>
+
+<a class="button secondary" href="/disconnect/youtube">
+Reconnect YouTube
+</a>
+
+<a class="button secondary" href="/history">
+View Job History
+</a>
         </div>
 
         <form action="/upload" method="post" enctype="multipart/form-data">
@@ -277,6 +286,15 @@ def home():
 
     return page_shell(content)
 
+@app.get("/disconnect/youtube")
+def disconnect_youtube():
+    try:
+        if os.path.exists(YOUTUBE_TOKEN_FILE):
+            os.remove(YOUTUBE_TOKEN_FILE)
+    except Exception:
+        pass
+
+    return RedirectResponse("/")
 
 @app.get("/history", response_class=HTMLResponse)
 def history():
