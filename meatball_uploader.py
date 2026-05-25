@@ -32,6 +32,29 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
+def friendly_service_error(error):
+    text = str(error).lower()
+
+    if "api_key" in text or "incorrect api key" in text:
+        return "OpenAI API key is missing or invalid. Check OPENAI_API_KEY in Render."
+
+    if "insufficient_quota" in text or "quota" in text or "billing" in text:
+        return "OpenAI billing or quota issue. Check your OpenAI credits and usage limits."
+
+    if "401" in text or "unauthorized" in text:
+        return "Authentication failed. You may need to reconnect YouTube."
+
+    if "403" in text and "quota" in text:
+        return "YouTube upload quota was exceeded. Try again later or check your Google Cloud quota."
+
+    if "invalid_grant" in text or "token" in text:
+        return "YouTube authorization expired or is invalid. Reconnect your YouTube account."
+
+    if "youtube" in text:
+        return "YouTube upload failed. Check your YouTube connection and Google Cloud settings."
+
+    return "A service call failed. Check the technical details below."
+
 def report(progress_callback, percent, message):
     print(message)
     if progress_callback:
@@ -260,7 +283,12 @@ def process_and_upload(input_video_path, progress_callback=None):
         report(progress_callback, 50, "Logo added successfully.")
 
         report(progress_callback, 60, "Generating title and description...")
-        title, description = generate_metadata(progress_callback)
+         try:
+            title, description = generate_metadata(progress_callback)
+        except Exception as e:
+            raise Exception(
+                f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
+            )
 
         print("\nTITLE:")
         print(title)
@@ -269,7 +297,12 @@ def process_and_upload(input_video_path, progress_callback=None):
         print(description)
 
         report(progress_callback, 85, "Uploading video to YouTube as private...")
-        youtube_url = upload_video(title, description)
+        try:
+            youtube_url = upload_video(title, description)
+        except Exception as e:
+            raise Exception(
+                f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
+            )
 
         report(progress_callback, 100, "Upload complete.")
 
