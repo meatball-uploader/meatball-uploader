@@ -283,7 +283,8 @@ def process_and_upload(input_video_path, progress_callback=None):
         report(progress_callback, 50, "Logo added successfully.")
 
         report(progress_callback, 60, "Generating title and description...")
-         try:
+
+        try:
             title, description = generate_metadata(progress_callback)
         except Exception as e:
             raise Exception(
@@ -297,6 +298,7 @@ def process_and_upload(input_video_path, progress_callback=None):
         print(description)
 
         report(progress_callback, 85, "Uploading video to YouTube as private...")
+
         try:
             youtube_url = upload_video(title, description)
         except Exception as e:
