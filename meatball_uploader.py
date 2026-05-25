@@ -38,6 +38,27 @@ def report(progress_callback, percent, message):
         progress_callback(percent, message)
 
 
+def friendly_ffmpeg_error(stderr):
+    error_text = stderr.lower()
+
+    if "no such file or directory" in error_text:
+        return "A required file was missing. Please check that the uploaded video and meatball.png exist."
+
+    if "invalid data found" in error_text:
+        return "The video file could not be read. Try exporting it as MP4 and uploading again."
+
+    if "error while decoding" in error_text:
+        return "FFmpeg had trouble decoding this video. This can happen with some iPhone MOV files."
+
+    if "cannot allocate memory" in error_text or "out of memory" in error_text:
+        return "Video processing ran out of memory. Try a shorter or smaller video."
+
+    if "unknown encoder" in error_text:
+        return "The server is missing a required video encoder."
+
+    return "Video processing failed. Check Render logs for full FFmpeg details."
+
+
 def run_ffmpeg(command):
     result = subprocess.run(
         command,
@@ -47,7 +68,11 @@ def run_ffmpeg(command):
     )
 
     if result.returncode != 0:
-        raise Exception(result.stderr)
+        friendly_message = friendly_ffmpeg_error(result.stderr)
+
+        raise Exception(
+            f"{friendly_message}\n\nFFmpeg details:\n{result.stderr[-2000:]}"
+        )
 
     return result
 
