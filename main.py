@@ -5,6 +5,7 @@ import uuid
 import threading
 import secrets
 import pickle
+import html
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -12,7 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 
 from google_auth_oauthlib.flow import Flow
 
-from meatball_uploader import process_and_upload
+from meatball_uploader import prepare_video_and_metadata, publish_prepared_video
 
 
 app = FastAPI()
@@ -27,10 +28,12 @@ CLIENT_SECRETS_FILE = f"{DATA_DIR}/client_secrets.json"
 YOUTUBE_TOKEN_FILE = os.getenv("YOUTUBE_TOKEN_FILE", f"{DATA_DIR}/youtube_token.pickle")
 STATE_FILE = f"{DATA_DIR}/oauth_state.txt"
 CODE_VERIFIER_FILE = f"{DATA_DIR}/oauth_verifier.txt"
+
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
 MAX_UPLOAD_SIZE_MB = 100
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 ALLOWED_EXTENSIONS = [".mp4", ".mov", ".m4v"]
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 
 def now_iso():
@@ -138,12 +141,14 @@ def page_shell(content):
             color: #9ca3af;
             margin-bottom: 24px;
         }}
-        .status {{
-            padding: 12px 14px;
+        .status, .metadata-box {{
+            white-space: pre-wrap;
             background: #0f172a;
-            border-radius: 14px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(255,255,255,0.08);
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.10);
+            color: #e5e7eb;
+            margin-bottom: 16px;
         }}
         label {{
             display: block;
@@ -152,7 +157,7 @@ def page_shell(content):
             color: #d1d5db;
             font-weight: bold;
         }}
-        input {{
+        input, textarea {{
             width: 100%;
             box-sizing: border-box;
             padding: 13px;
@@ -160,6 +165,9 @@ def page_shell(content):
             border: 1px solid rgba(255,255,255,0.15);
             background: #111827;
             color: white;
+        }}
+        textarea {{
+            min-height: 160px;
         }}
         button, .button {{
             display: inline-block;
@@ -198,14 +206,6 @@ def page_shell(content):
             color: #fecaca;
             border: 1px solid rgba(248,113,113,0.35);
         }}
-        .metadata-box {{
-            white-space: pre-wrap;
-            background: #0f172a;
-            padding: 16px;
-            border-radius: 12px;
-            border: 1px solid rgba(255,255,255,0.10);
-            color: #e5e7eb;
-        }}
         table {{
             width: 100%;
             border-collapse: collapse;
@@ -215,9 +215,6 @@ def page_shell(content):
             border-bottom: 1px solid rgba(255,255,255,0.12);
             padding: 12px 8px;
             vertical-align: top;
-        }}
-        th {{
-            color: #d1d5db;
         }}
         a {{
             color: #93c5fd;
@@ -253,22 +250,13 @@ def home():
 
     content = f"""
         <h1>Meatball Uploader</h1>
-        <div class="sub">Upload a video, add the Meatball logo, generate metadata, and send it to YouTube.</div>
+        <div class="sub">Upload a video, add the Meatball logo, generate metadata, preview it, then publish to YouTube.</div>
 
         <div class="status">
-            <strong>YouTube:</strong> {youtube_status}
-            <br>
-<a class="button secondary" href="/auth/youtube">
-Connect YouTube Account
-</a>
-
-<a class="button secondary" href="/disconnect/youtube">
-Reconnect YouTube
-</a>
-
-<a class="button secondary" href="/history">
-View Job History
-</a>
+            <strong>YouTube:</strong> {youtube_status}<br>
+            <a class="button secondary" href="/auth/youtube">Connect YouTube Account</a>
+            <a class="button secondary" href="/disconnect/youtube">Reconnect YouTube</a>
+            <a class="button secondary" href="/history">View Job History</a>
         </div>
 
         <form action="/upload" method="post" enctype="multipart/form-data">
@@ -278,13 +266,14 @@ View Job History
             <label>Select video</label>
             <input name="video" type="file" accept="video/*" required />
 
-            <button type="submit">Upload and Process</button>
+            <button type="submit">Upload and Prepare Preview</button>
         </form>
 
-        <p class="small">Uploads are processed in the background and status is saved to disk.</p>
+        <p class="small">Allowed files: {", ".join(ALLOWED_EXTENSIONS)}. Max size: {MAX_UPLOAD_SIZE_MB} MB.</p>
     """
 
     return page_shell(content)
+
 
 @app.get("/disconnect/youtube")
 def disconnect_youtube():
@@ -295,72 +284,6 @@ def disconnect_youtube():
         pass
 
     return RedirectResponse("/")
-
-@app.get("/history", response_class=HTMLResponse)
-def history():
-    ensure_dirs()
-
-    rows = []
-
-    for file_name in sorted(os.listdir(JOBS_DIR), reverse=True):
-        if not file_name.endswith(".json"):
-            continue
-
-        job_id = file_name.replace(".json", "")
-        job = read_job(job_id)
-
-        status = job.get("status", "")
-        progress = job.get("progress", 0)
-        error = job.get("error")
-        youtube_url = job.get("youtube_url")
-        title = job.get("title") or ""
-        duration = job.get("duration_seconds")
-
-        duration_text = f"{duration}s" if duration is not None else "-"
-
-        if error:
-            result = f"<span style='color:#fca5a5;'>Failed</span><br><small>{error}</small>"
-        elif youtube_url:
-            result = f"<a href='{youtube_url}' target='_blank'>Open video</a>"
-        elif job.get("done"):
-            result = "Done"
-        else:
-            result = "In progress"
-
-        rows.append(f"""
-            <tr>
-                <td><a href="/job/{job_id}">{job_id[:8]}</a></td>
-                <td>{progress}%</td>
-                <td>{duration_text}</td>
-                <td>{status}<br><small>{title}</small></td>
-                <td>{result}</td>
-            </tr>
-        """)
-
-    table_rows = "\n".join(rows) if rows else """
-        <tr>
-            <td colspan="5">No jobs yet.</td>
-        </tr>
-    """
-
-    return page_shell(f"""
-        <h1>Job History</h1>
-        <p class="sub">Recent uploads and processing results.</p>
-
-        <table>
-            <tr>
-                <th align="left">Job</th>
-                <th align="left">Progress</th>
-                <th align="left">Duration</th>
-                <th align="left">Status</th>
-                <th align="left">Result</th>
-            </tr>
-            {table_rows}
-        </table>
-
-        <br>
-        <a class="button secondary" href="/">Back to uploader</a>
-    """)
 
 
 @app.get("/auth/youtube")
@@ -423,26 +346,22 @@ def oauth_callback(request: Request):
     """)
 
 
-def run_job(job_id, input_path):
+def run_prepare_job(job_id, input_path):
     try:
         update_job(
             job_id,
             progress=10,
-            status="Video received. Starting job...",
+            status="Video received. Starting preview preparation...",
             started_at=now_iso(),
         )
 
         def progress_callback(percent, message):
             update_job(job_id, progress=percent, status=message)
 
-        result = process_and_upload(
+        result = prepare_video_and_metadata(
             input_path,
             progress_callback=progress_callback,
         )
-
-        youtube_url = result.get("youtube_url")
-        title = result.get("title")
-        description = result.get("description")
 
         completed_at = now_iso()
         job = read_job(job_id)
@@ -450,12 +369,13 @@ def run_job(job_id, input_path):
 
         update_job(
             job_id,
-            progress=100,
-            status="Complete",
+            progress=80,
+            status="Preview ready.",
             done=True,
-            youtube_url=youtube_url,
-            title=title,
-            description=description,
+            preview_ready=True,
+            processed_video_path=result.get("processed_video_path"),
+            title=result.get("title"),
+            description=result.get("description"),
             completed_at=completed_at,
             duration_seconds=duration,
         )
@@ -476,6 +396,58 @@ def run_job(job_id, input_path):
         )
 
 
+def run_publish_job(job_id, title, description):
+    try:
+        update_job(
+            job_id,
+            progress=85,
+            status="Publishing to YouTube as private...",
+            done=False,
+            error=None,
+        )
+
+        def progress_callback(percent, message):
+            update_job(job_id, progress=percent, status=message)
+
+        youtube_url = publish_prepared_video(
+            title,
+            description,
+            progress_callback=progress_callback,
+        )
+
+        completed_at = now_iso()
+        job = read_job(job_id)
+        duration = duration_seconds(job.get("started_at"), completed_at)
+
+        update_job(
+            job_id,
+            progress=100,
+            status="Complete",
+            done=True,
+            published=True,
+            youtube_url=youtube_url,
+            title=title,
+            description=description,
+            completed_at=completed_at,
+            duration_seconds=duration,
+        )
+
+    except Exception as e:
+        completed_at = now_iso()
+        job = read_job(job_id)
+        duration = duration_seconds(job.get("started_at"), completed_at)
+
+        update_job(
+            job_id,
+            progress=100,
+            status="Publish failed",
+            done=True,
+            error=str(e),
+            completed_at=completed_at,
+            duration_seconds=duration,
+        )
+
+
 @app.post("/upload", response_class=HTMLResponse)
 def upload(password: str = Form(...), video: UploadFile = File(...)):
     ensure_dirs()
@@ -489,21 +461,15 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
             <p>Please connect your YouTube account before uploading.</p>
             <a class="button" href="/auth/youtube">Connect YouTube Account</a>
         """)
-    # ? INSERT NEW CODE HERE
 
     file_ext = os.path.splitext(video.filename)[1].lower()
 
     if file_ext not in ALLOWED_EXTENSIONS:
         return page_shell(f"""
             <h1>Unsupported file type</h1>
-
-            <p>Allowed:</p>
-
+            <p>Please upload one of these file types:</p>
             <pre>{", ".join(ALLOWED_EXTENSIONS)}</pre>
-
-            <a class="button" href="/">
-                Back
-            </a>
+            <a class="button" href="/">Back to uploader</a>
         """)
 
     video.file.seek(0, os.SEEK_END)
@@ -514,23 +480,12 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
         size_mb = round(file_size / 1024 / 1024, 2)
 
         return page_shell(f"""
-            <h1>Video too large</h1>
-
-            <p>
-                Uploaded:
-                {size_mb} MB
-            </p>
-
-            <p>
-                Limit:
-                {MAX_UPLOAD_SIZE_MB} MB
-            </p>
-
-            <a class="button" href="/">
-                Back
-            </a>
+            <h1>Video is too large</h1>
+            <p>Your file is {size_mb} MB.</p>
+            <p>Maximum allowed size is {MAX_UPLOAD_SIZE_MB} MB.</p>
+            <a class="button" href="/">Back to uploader</a>
         """)
-        	
+
     safe_filename = video.filename.replace(" ", "_")
     input_path = f"uploads/{uuid.uuid4()}_{safe_filename}"
     created_at = now_iso()
@@ -553,15 +508,18 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
         "started_at": None,
         "completed_at": None,
         "duration_seconds": None,
+        "preview_ready": False,
+        "published": False,
+        "processed_video_path": None,
     })
 
-    thread = threading.Thread(target=run_job, args=(job_id, input_path))
+    thread = threading.Thread(target=run_prepare_job, args=(job_id, input_path))
     thread.daemon = True
     thread.start()
 
     content = f"""
-        <h1>Processing video</h1>
-        <p class="sub">Keep this page open while Meatball works his magic.</p>
+        <h1>Preparing preview</h1>
+        <p class="sub">Keep this page open while Meatball prepares your video and metadata.</p>
 
         <div class="bar">
             <div id="fill" class="fill"></div>
@@ -590,6 +548,95 @@ def upload(password: str = Form(...), video: UploadFile = File(...)):
                             </div>
                         `;
                     }} else {{
+                        window.location.href = "/preview/{job_id}";
+                    }}
+                }}
+            }}
+
+            refreshStatus();
+            setInterval(refreshStatus, 1500);
+        </script>
+    """
+
+    return page_shell(content)
+
+
+@app.get("/preview/{job_id}", response_class=HTMLResponse)
+def preview(job_id: str):
+    job = read_job(job_id)
+
+    if job.get("error"):
+        return page_shell(f"""
+            <h1>Processing failed</h1>
+            <pre>{html.escape(job.get("error", ""))}</pre>
+            <a class="button" href="/">Try again</a>
+        """)
+
+    title = html.escape(job.get("title") or "")
+    description = html.escape(job.get("description") or "")
+
+    return page_shell(f"""
+        <h1>Preview before publish</h1>
+        <p class="sub">Review and edit the title or description before uploading to YouTube.</p>
+
+        <form action="/publish/{job_id}" method="post">
+            <label>Title</label>
+            <input name="title" value="{title}" required />
+
+            <label>Description</label>
+            <textarea name="description" required>{description}</textarea>
+
+            <button type="submit">Publish to YouTube as Private</button>
+            <a class="button secondary" href="/">Cancel</a>
+        </form>
+    """)
+
+
+@app.post("/publish/{job_id}", response_class=HTMLResponse)
+def publish(job_id: str, title: str = Form(...), description: str = Form(...)):
+    job = read_job(job_id)
+
+    if not job.get("preview_ready"):
+        return page_shell("""
+            <h1>Preview not ready</h1>
+            <p>This job is not ready to publish yet.</p>
+            <a class="button" href="/history">Back to history</a>
+        """)
+
+    thread = threading.Thread(target=run_publish_job, args=(job_id, title, description))
+    thread.daemon = True
+    thread.start()
+
+    content = f"""
+        <h1>Publishing to YouTube</h1>
+        <p class="sub">Uploading your reviewed video as private.</p>
+
+        <div class="bar">
+            <div id="fill" class="fill"></div>
+        </div>
+
+        <p id="status">Publishing...</p>
+
+        <script>
+            async function refreshStatus() {{
+                const response = await fetch("/status/{job_id}");
+                const data = await response.json();
+
+                document.getElementById("fill").style.width = data.progress + "%";
+                document.getElementById("status").innerText = data.status;
+
+                if (data.done) {{
+                    if (data.error) {{
+                        document.body.innerHTML = `
+                            <div class="wrap">
+                                <div class="card">
+                                    <h1>Publishing failed</h1>
+                                    <pre>${{data.error}}</pre>
+                                    <a class="button" href="/preview/{job_id}">Back to preview</a>
+                                </div>
+                            </div>
+                        `;
+                    }} else {{
                         window.location.href = "/complete/{job_id}";
                     }}
                 }}
@@ -608,6 +655,72 @@ def status(job_id: str):
     return JSONResponse(read_job(job_id))
 
 
+@app.get("/history", response_class=HTMLResponse)
+def history():
+    ensure_dirs()
+
+    rows = []
+
+    for file_name in sorted(os.listdir(JOBS_DIR), reverse=True):
+        if not file_name.endswith(".json"):
+            continue
+
+        job_id = file_name.replace(".json", "")
+        job = read_job(job_id)
+
+        status = job.get("status", "")
+        progress = job.get("progress", 0)
+        error = job.get("error")
+        youtube_url = job.get("youtube_url")
+        title = job.get("title") or ""
+        duration = job.get("duration_seconds")
+        duration_text = f"{duration}s" if duration is not None else "-"
+
+        if error:
+            result = f"<span style='color:#fca5a5;'>Failed</span><br><small>{html.escape(error)}</small>"
+        elif youtube_url:
+            result = f"<a href='{youtube_url}' target='_blank'>Open video</a>"
+        elif job.get("preview_ready"):
+            result = f"<a href='/preview/{job_id}'>Preview</a>"
+        else:
+            result = "In progress"
+
+        rows.append(f"""
+            <tr>
+                <td><a href="/job/{job_id}">{job_id[:8]}</a></td>
+                <td>{progress}%</td>
+                <td>{duration_text}</td>
+                <td>{html.escape(status)}<br><small>{html.escape(title)}</small></td>
+                <td>{result}</td>
+            </tr>
+        """)
+
+    table_rows = "\n".join(rows) if rows else """
+        <tr>
+            <td colspan="5">No jobs yet.</td>
+        </tr>
+    """
+
+    return page_shell(f"""
+        <h1>Job History</h1>
+        <p class="sub">Recent uploads and processing results.</p>
+
+        <table>
+            <tr>
+                <th align="left">Job</th>
+                <th align="left">Progress</th>
+                <th align="left">Duration</th>
+                <th align="left">Status</th>
+                <th align="left">Result</th>
+            </tr>
+            {table_rows}
+        </table>
+
+        <br>
+        <a class="button secondary" href="/">Back to uploader</a>
+    """)
+
+
 @app.get("/complete/{job_id}", response_class=HTMLResponse)
 def complete(job_id: str):
     job = read_job(job_id)
@@ -616,15 +729,14 @@ def complete(job_id: str):
         return page_shell(f"""
             <h1>Processing failed</h1>
             <p>Something went wrong.</p>
-            <pre>{job.get("error")}</pre>
+            <pre>{html.escape(job.get("error"))}</pre>
             <a class="button" href="/">Try again</a>
         """)
 
     youtube_url = job.get("youtube_url")
-    title = job.get("title") or "No title saved."
-    description = job.get("description") or "No description saved."
+    title = html.escape(job.get("title") or "No title saved.")
+    description = html.escape(job.get("description") or "No description saved.")
     duration = job.get("duration_seconds")
-
     duration_text = f"{duration}s" if duration is not None else "-"
 
     content = f"""
@@ -636,10 +748,10 @@ def complete(job_id: str):
             <strong>Completed:</strong> {job.get("completed_at")}
         </div>
 
-        <h3>Generated Title</h3>
+        <h3>Published Title</h3>
         <div class="metadata-box">{title}</div>
 
-        <h3>Generated Description</h3>
+        <h3>Published Description</h3>
         <div class="metadata-box">{description}</div>
 
         <a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>
@@ -657,42 +769,49 @@ def job_detail(job_id: str):
 
     youtube_url = job.get("youtube_url")
     error = job.get("error")
-    title = job.get("title") or "No title saved."
-    description = job.get("description") or "No description saved."
+    title = html.escape(job.get("title") or "No title saved.")
+    description = html.escape(job.get("description") or "No description saved.")
 
     youtube_section = (
         f'<a class="button" href="{youtube_url}" target="_blank">Open YouTube Video</a>'
         if youtube_url
-        else "<p>No YouTube URL yet.</p>"
+        else ""
+    )
+
+    preview_section = (
+        f'<a class="button" href="/preview/{job_id}">Open Preview</a>'
+        if job.get("preview_ready") and not youtube_url
+        else ""
     )
 
     error_section = (
-        f"<h3>Error</h3><pre>{error}</pre>"
+        f"<h3>Error</h3><pre>{html.escape(error)}</pre>"
         if error
         else ""
     )
 
-    details = json.dumps(job, indent=2)
+    details = html.escape(json.dumps(job, indent=2))
 
     return page_shell(f"""
         <h1>Job Details</h1>
 
         <div class="status">
-            <strong>Status:</strong> {job.get("status")}<br>
+            <strong>Status:</strong> {html.escape(str(job.get("status")))}<br>
             <strong>Progress:</strong> {job.get("progress")}%<br>
-            <strong>Input File:</strong> {job.get("input_filename")}<br>
+            <strong>Input File:</strong> {html.escape(str(job.get("input_filename")))}<br>
             <strong>Created:</strong> {job.get("created_at")}<br>
             <strong>Started:</strong> {job.get("started_at")}<br>
             <strong>Completed:</strong> {job.get("completed_at")}<br>
             <strong>Duration:</strong> {job.get("duration_seconds")}s
         </div>
 
-        <h3>Generated Title</h3>
+        <h3>Title</h3>
         <div class="metadata-box">{title}</div>
 
-        <h3>Generated Description</h3>
+        <h3>Description</h3>
         <div class="metadata-box">{description}</div>
 
+        {preview_section}
         {youtube_section}
 
         {error_section}
