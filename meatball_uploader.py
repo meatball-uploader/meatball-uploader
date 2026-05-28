@@ -273,45 +273,64 @@ def cleanup_files(input_video_path=None):
             pass
 
 
+def prepare_video_and_metadata(input_video_path, progress_callback=None):
+    report(progress_callback, 20, "Starting video processing...")
+
+    report(progress_callback, 35, "Adding Meatball logo...")
+    add_logo_to_video(input_video_path)
+
+    report(progress_callback, 50, "Logo added successfully.")
+
+    report(progress_callback, 60, "Generating title and description...")
+
+    try:
+        title, description = generate_metadata(progress_callback)
+    except Exception as e:
+        raise Exception(
+            f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
+        )
+
+    report(progress_callback, 80, "Preview ready.")
+
+    return {
+        "processed_video_path": OUTPUT_VIDEO,
+        "title": title,
+        "description": description
+    }
+
+
+def publish_prepared_video(title, description, progress_callback=None):
+    report(progress_callback, 90, "Uploading video to YouTube as private...")
+
+    try:
+        youtube_url = upload_video(title, description)
+    except Exception as e:
+        raise Exception(
+            f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
+        )
+
+    report(progress_callback, 100, "Upload complete.")
+
+    return youtube_url
+
+
 def process_and_upload(input_video_path, progress_callback=None):
     try:
-        report(progress_callback, 20, "Starting video processing...")
+        result = prepare_video_and_metadata(
+            input_video_path,
+            progress_callback=progress_callback
+        )
 
-        report(progress_callback, 35, "Adding Meatball logo...")
-        add_logo_to_video(input_video_path)
-
-        report(progress_callback, 50, "Logo added successfully.")
-
-        report(progress_callback, 60, "Generating title and description...")
-
-        try:
-            title, description = generate_metadata(progress_callback)
-        except Exception as e:
-            raise Exception(
-                f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
-            )
-
-        print("\nTITLE:")
-        print(title)
-
-        print("\nDESCRIPTION:")
-        print(description)
-
-        report(progress_callback, 85, "Uploading video to YouTube as private...")
-
-        try:
-            youtube_url = upload_video(title, description)
-        except Exception as e:
-            raise Exception(
-                f"{friendly_service_error(e)}\n\nDetails:\n{str(e)}"
-            )
-
-        report(progress_callback, 100, "Upload complete.")
+        youtube_url = publish_prepared_video(
+            result["title"],
+            result["description"],
+            progress_callback=progress_callback
+        )
 
         return {
             "youtube_url": youtube_url,
-            "title": title,
-            "description": description
+            "title": result["title"],
+            "description": result["description"]
         }
 
     finally:
